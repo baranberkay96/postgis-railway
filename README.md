@@ -1,5 +1,7 @@
 # Deploy and Host PostGIS with Railway
 
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/postgis-36-spatial-database-on-postgres-?referralCode=20H68q)
+
 PostGIS adds geometry and geography types, spatial indexes and hundreds of spatial functions to PostgreSQL. This template deploys PostgreSQL 18 with PostGIS 3.6 on Railway's own SSL-enabled Postgres image, with the same connection variables as Railway Postgres, automatic tuning, daily backups to a Railway Bucket and an optional public TCP proxy.
 
 ## About Hosting PostGIS
