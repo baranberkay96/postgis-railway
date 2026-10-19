@@ -1,0 +1,145 @@
+#!/bin/bash
+# postgis-backup: one backup run, started by Railway's cron schedule.
+#
+#   1. pg_dump (custom format, compressed) of every database that accepts
+#      connections and is not a template, or of BACKUP_DATABASES, streamed to
+#      the bucket without a temporary copy on disk,
+#   2. roles as globals.sql (pg_dumpall --globals-only --no-role-passwords),
+#   3. MANIFEST.txt and LATEST, written only when every dump succeeded,
+#   4. retention: backup folders older than BACKUP_RETENTION_DAYS are deleted,
+#      only after a fully successful run (a failing job never eats the last
+#      good backups).
+# Exit status is non-zero when anything failed, so the cron run shows as
+# failed in Railway.
+#
+# Variables (besides those in lib.sh):
+#   BACKUP_DATABASES        space/comma separated list; empty = all databases
+#   BACKUP_RETENTION_DAYS   default 14; 0 keeps everything
+#   BACKUP_COMPRESSION      pg_dump --compress value, default zstd:6
+#   BACKUP_PING_URL         optional URL requested after a successful run
+#                           (e.g. a healthchecks.io check)
+set -Eeuo pipefail
+
+LOG_TAG=postgis-backup
+# shellcheck source=lib.sh
+. "${POSTGIS_BACKUP_LIB:-/usr/local/lib/postgis-backup/lib.sh}"
+
+RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-14}"
+COMPRESSION="${BACKUP_COMPRESSION:-zstd:6}"
+
+list_databases() {
+  if [ -n "${BACKUP_DATABASES:-}" ]; then
+    local -a wanted=()
+    IFS=', ' read -r -a wanted <<< "$BACKUP_DATABASES"
+    printf '%s\n' "${wanted[@]}"
+  else
+    psql -X -q -A -t -v ON_ERROR_STOP=1 \
+      -c 'SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname'
+  fi
+}
+
+# dump_database DB KEY: streams pg_dump into the bucket object KEY.
+dump_database() {
+  local db="$1" key="$2" status_file dump_rc upload_rc=0
+  status_file=$(mktemp)
+  echo 1 > "$status_file"
+  # pg_dump reads the database name from PGDATABASE so that names with
+  # spaces or '=' are never parsed as connection strings.
+  { PGDATABASE="$db" pg_dump --format=custom --compress="$COMPRESSION" --no-password; echo $? > "$status_file"; } \
+    | rclone rcat --retries 1 --log-level NOTICE "$key" || upload_rc=$?
+  dump_rc=$(cat "$status_file")
+  rm -f "$status_file"
+  if [ "$dump_rc" != 0 ] || [ "$upload_rc" != 0 ]; then
+    log "FAILED: database '$db' (pg_dump exit $dump_rc, upload exit $upload_rc)"
+    rclone deletefile "$key" >/dev/null 2>&1 || true
+    return 1
+  fi
+}
+
+object_size() {
+  rclone size --json "$1" 2>/dev/null | sed -n 's/.*"bytes":\([0-9][0-9]*\).*/\1/p' || true
+}
+
+main() {
+  require_uint BACKUP_RETENTION_DAYS "$RETENTION_DAYS" 0
+  configure_pg
+  configure_remote
+  wait_for_postgres
+
+  local ts dest failures=0 db key size total=0 count=0 manifest server_version
+  ts=$(date -u +%Y%m%dT%H%M%SZ)
+  dest="${REMOTE}/${ts}"
+  manifest=$(mktemp)
+  server_version=$(psql -X -q -A -t -c 'SHOW server_version')
+  {
+    echo "PostGIS service backup ${ts}"
+    echo "host: ${PGHOST}:${PGPORT}"
+    echo "server: PostgreSQL ${server_version}"
+    echo "client: $(pg_dump --version)"
+    echo "format: pg_dump custom (--compress=${COMPRESSION}); restore with pg_restore 18 or newer"
+    echo
+    printf '%s\t%s\t%s\t%s\n' object bytes postgis database
+  } > "$manifest"
+
+  log "starting backup ${ts} to ${dest}"
+  local -a databases=()
+  while IFS= read -r db; do
+    if [ -n "$db" ]; then databases+=("$db"); fi
+  done < <(list_databases)
+  [ "${#databases[@]}" -gt 0 ] || die "no databases to back up"
+
+  for db in "${databases[@]}"; do
+    key="${dest}/$(object_name "$db").dump"
+    if [ -n "$(rclone lsf "$key" 2>/dev/null || true)" ]; then
+      # Two databases mapped to the same safe name: keep both.
+      key="${dest}/$(object_name "$db")-$(printf '%s' "$db" | cksum | cut -d' ' -f1).dump"
+    fi
+    log "dumping '$db'"
+    if dump_database "$db" "$key"; then
+      size=$(object_size "$key")
+      size=${size:-0}
+      local postgis
+      postgis=$(PGDATABASE="$db" psql -X -q -A -t \
+        -c "SELECT extversion FROM pg_extension WHERE extname = 'postgis'" 2>/dev/null || true)
+      printf '%s\t%s\t%s\t%s\n' "${key##*/}" "$size" "${postgis:--}" "$db" >> "$manifest"
+      log "stored '$db' as ${key##*/} (${size} bytes)"
+      total=$((total + size))
+      count=$((count + 1))
+    else
+      failures=$((failures + 1))
+    fi
+  done
+
+  if pg_dumpall --globals-only --no-role-passwords --no-password \
+    | rclone rcat --retries 1 --log-level NOTICE "${dest}/globals.sql"; then
+    printf '%s\t%s\t%s\t%s\n' globals.sql "$(object_size "${dest}/globals.sql")" - '(roles, without passwords)' >> "$manifest"
+  else
+    log "FAILED: roles (pg_dumpall --globals-only)"
+    failures=$((failures + 1))
+  fi
+
+  if [ "$failures" -gt 0 ]; then
+    rm -f "$manifest"
+    die "backup ${ts} incomplete: ${failures} failure(s); no MANIFEST written, old backups kept"
+  fi
+
+  rclone rcat --retries 3 "${dest}/MANIFEST.txt" < "$manifest"
+  printf '%s\n' "$ts" | rclone rcat --retries 3 "${REMOTE}/LATEST"
+  rm -f "$manifest"
+  log "backup ${ts} complete: ${count} database(s), ${total} bytes"
+
+  if [ "$RETENTION_DAYS" -gt 0 ]; then
+    log "deleting backups older than ${RETENTION_DAYS} days under ${REMOTE}"
+    rclone delete "$REMOTE" --min-age "${RETENTION_DAYS}d" \
+      --include "/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z/**" \
+      --log-level NOTICE \
+      || log "WARNING: deleting old backups failed; it is retried on the next run"
+  fi
+
+  if [ -n "${BACKUP_PING_URL:-}" ]; then
+    curl -fsS -m 15 --retry 3 -o /dev/null "$BACKUP_PING_URL" \
+      || log "WARNING: BACKUP_PING_URL request failed"
+  fi
+}
+
+main "$@"

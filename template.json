@@ -1,0 +1,247 @@
+{
+  "name": "PostGIS 3.6 Spatial Database on Postgres 18",
+  "description": "Drop-in Postgres with PostGIS for maps, geofencing and spatial queries.",
+  "category": "Storage",
+  "tags": [
+    "postgis",
+    "postgres",
+    "postgresql",
+    "gis",
+    "geospatial",
+    "spatial",
+    "database",
+    "maps"
+  ],
+  "image": "https://postgis.net/brand.svg",
+  "upstream": {
+    "repo": "postgis/postgis (packages: apt.postgresql.org trixie-pgdg postgresql-18-postgis-3)",
+    "version": "PostGIS 3.6.4 (3.6.4+dfsg-2.pgdg13+1) on PostgreSQL 18.6 (ghcr.io/railwayapp-templates/postgres-ssl:18)",
+    "checked": "2026-10-20"
+  },
+  "services": {
+    "PostGIS": {
+      "icon": "https://postgis.net/brand.svg",
+      "source": {
+        "repo": "baranberkay96/postgis-railway",
+        "rootDirectory": "/services/postgis"
+      },
+      "startCommand": null,
+      "preDeployCommand": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyType": "ALWAYS",
+      "restartPolicyMaxRetries": null,
+      "numReplicas": 1,
+      "cronSchedule": null,
+      "publicDomain": false,
+      "targetPort": null,
+      "tcpProxy": {
+        "port": 5432
+      },
+      "volume": {
+        "mountPath": "/var/lib/postgresql/data"
+      },
+      "variables": {
+        "POSTGRES_USER": {
+          "defaultValue": "postgres",
+          "description": "Superuser created on first boot (Railway Postgres default).",
+          "required": false
+        },
+        "POSTGRES_PASSWORD": {
+          "defaultValue": "${{ secret(32, \"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\") }}",
+          "description": "Superuser password, generated at deploy (32 letters, URL-safe). Changing it later needs ALTER USER as well.",
+          "required": false
+        },
+        "POSTGRES_DB": {
+          "defaultValue": "railway",
+          "description": "Database created on first boot, with PostGIS, postgis_topology, fuzzystrmatch and pg_stat_statements enabled.",
+          "required": false
+        },
+        "PGDATA": {
+          "defaultValue": "/var/lib/postgresql/data/pgdata",
+          "description": "Data directory, a subfolder of the volume (required by Railway's Postgres wrapper).",
+          "required": false
+        },
+        "PGHOST": {
+          "defaultValue": "${{RAILWAY_PRIVATE_DOMAIN}}",
+          "description": "Private hostname for other services (also used by Railway's Data tab).",
+          "required": false
+        },
+        "PGPORT": {
+          "defaultValue": "5432",
+          "description": "Postgres port on the private network.",
+          "required": false
+        },
+        "PGUSER": {
+          "defaultValue": "${{POSTGRES_USER}}",
+          "description": "libpq user variable (Railway's Data tab and psql).",
+          "required": false
+        },
+        "PGPASSWORD": {
+          "defaultValue": "${{POSTGRES_PASSWORD}}",
+          "description": "libpq password variable (Railway's Data tab and psql).",
+          "required": false
+        },
+        "PGDATABASE": {
+          "defaultValue": "${{POSTGRES_DB}}",
+          "description": "libpq database variable (Railway's Data tab and psql).",
+          "required": false
+        },
+        "DATABASE_URL": {
+          "defaultValue": "postgresql://${{PGUSER}}:${{POSTGRES_PASSWORD}}@${{RAILWAY_PRIVATE_DOMAIN}}:5432/${{PGDATABASE}}",
+          "description": "Private connection URL for services in this project (reference PostGIS.DATABASE_URL from your app's variables).",
+          "required": false
+        },
+        "DATABASE_PUBLIC_URL": {
+          "defaultValue": "postgresql://${{PGUSER}}:${{POSTGRES_PASSWORD}}@${{RAILWAY_TCP_PROXY_DOMAIN}}:${{RAILWAY_TCP_PROXY_PORT}}/${{PGDATABASE}}",
+          "description": "Public URL through the TCP proxy (QGIS, psql, apps outside Railway). TLS is offered; add ?sslmode=require for libpq clients. Empty host if the TCP proxy is removed.",
+          "required": false
+        },
+        "SSL_CERT_DAYS": {
+          "defaultValue": "820",
+          "description": "Validity of the self-signed TLS certificate; it is renewed automatically 30 days before expiry.",
+          "required": false
+        },
+        "RAILWAY_DEPLOYMENT_DRAINING_SECONDS": {
+          "defaultValue": "60",
+          "description": "Time Postgres gets for a clean shutdown on redeploy.",
+          "required": false
+        },
+        "PG_TUNE": {
+          "defaultValue": "true",
+          "description": "true: size shared_buffers, work_mem, parallel workers etc. from the container's memory/CPU limits at every boot. false: Postgres defaults.",
+          "required": false
+        },
+        "PG_TUNE_MEMORY_MB": {
+          "defaultValue": "",
+          "description": "Optional memory budget in MiB for the tuning. Empty = the service memory limit, capped at 16384.",
+          "required": false
+        },
+        "PG_TUNE_CPUS": {
+          "defaultValue": "",
+          "description": "Optional CPU count for parallel-query settings. Empty = the service CPU quota, capped at 8.",
+          "required": false
+        },
+        "PG_REQUIRE_TLS": {
+          "defaultValue": "false",
+          "description": "true: every non-local login must use TLS (pg_hba hostssl), including private-network apps. Keep false for drop-in compatibility.",
+          "required": false
+        },
+        "POSTGIS_AUTO_UPDATE": {
+          "defaultValue": "true",
+          "description": "Apply PostGIS patch updates (3.6.x) to existing databases after an image rebuild. Minor upgrades are never automatic.",
+          "required": false
+        },
+        "POSTGIS_TIGER_GEOCODER": {
+          "defaultValue": "false",
+          "description": "First boot only: also create the legacy US TIGER geocoder (removed in PostGIS 3.7).",
+          "required": false
+        }
+      }
+    },
+    "PostGIS Backup": {
+      "icon": "https://devicons.railway.app/i/postgresql.svg",
+      "source": {
+        "repo": "baranberkay96/postgis-railway",
+        "rootDirectory": "/services/backup"
+      },
+      "startCommand": null,
+      "preDeployCommand": null,
+      "healthcheckPath": null,
+      "healthcheckTimeout": null,
+      "restartPolicyType": "NEVER",
+      "restartPolicyMaxRetries": null,
+      "numReplicas": 1,
+      "cronSchedule": "15 3 * * *",
+      "publicDomain": false,
+      "targetPort": null,
+      "tcpProxy": null,
+      "volume": null,
+      "variables": {
+        "PGHOST": {
+          "defaultValue": "${{PostGIS.PGHOST}}",
+          "description": "PostGIS private hostname.",
+          "required": false
+        },
+        "PGPORT": {
+          "defaultValue": "${{PostGIS.PGPORT}}",
+          "description": "PostGIS port.",
+          "required": false
+        },
+        "PGUSER": {
+          "defaultValue": "${{PostGIS.POSTGRES_USER}}",
+          "description": "Superuser used for pg_dump (reads every database and role).",
+          "required": false
+        },
+        "PGPASSWORD": {
+          "defaultValue": "${{PostGIS.POSTGRES_PASSWORD}}",
+          "description": "Password of that user.",
+          "required": false
+        },
+        "PGDATABASE": {
+          "defaultValue": "${{PostGIS.POSTGRES_DB}}",
+          "description": "Database used to list databases; also the default for restores.",
+          "required": false
+        },
+        "BACKUP_S3_ENDPOINT": {
+          "defaultValue": "${{Bucket.ENDPOINT}}",
+          "description": "S3 endpoint of the Railway Bucket.",
+          "required": false
+        },
+        "BACKUP_S3_BUCKET": {
+          "defaultValue": "${{Bucket.BUCKET}}",
+          "description": "S3 name of the Railway Bucket.",
+          "required": false
+        },
+        "BACKUP_S3_REGION": {
+          "defaultValue": "${{Bucket.REGION}}",
+          "description": "Bucket region.",
+          "required": false
+        },
+        "BACKUP_S3_ACCESS_KEY_ID": {
+          "defaultValue": "${{Bucket.ACCESS_KEY_ID}}",
+          "description": "Bucket access key.",
+          "required": false
+        },
+        "BACKUP_S3_SECRET_ACCESS_KEY": {
+          "defaultValue": "${{Bucket.SECRET_ACCESS_KEY}}",
+          "description": "Bucket secret key.",
+          "required": false
+        },
+        "BACKUP_S3_FORCE_PATH_STYLE": {
+          "defaultValue": "false",
+          "description": "Railway Buckets use virtual-hosted URLs; true only if the Bucket's Credentials tab says path-style.",
+          "required": false
+        },
+        "BACKUP_PREFIX": {
+          "defaultValue": "postgis",
+          "description": "Folder in the bucket; each run writes {prefix}/{YYYYMMDDTHHMMSSZ}/ plus {prefix}/LATEST.",
+          "required": false
+        },
+        "BACKUP_RETENTION_DAYS": {
+          "defaultValue": "14",
+          "description": "Backups older than this are deleted after a fully successful run. 0 keeps everything.",
+          "required": false
+        },
+        "BACKUP_DATABASES": {
+          "defaultValue": "",
+          "description": "Optional comma-separated databases to dump. Empty = every non-template database.",
+          "required": false
+        },
+        "BACKUP_COMPRESSION": {
+          "defaultValue": "zstd:6",
+          "description": "pg_dump --compress value (zstd:N, gzip:N, lz4 or none).",
+          "required": false
+        },
+        "BACKUP_PING_URL": {
+          "defaultValue": "",
+          "description": "Optional URL requested after each successful run (e.g. a healthchecks.io check) to alert on missed backups.",
+          "required": false
+        }
+      }
+    }
+  },
+  "buckets": [
+    "Bucket"
+  ]
+}

@@ -1,0 +1,67 @@
+#!/bin/bash
+# postgis-restore: restore one database from a backup into a NEW database on
+# the PostGIS service. It never overwrites or drops anything: if the target
+# database exists, it stops.
+#
+# Use: set the PostGIS Backup service's start command to `postgis-restore`,
+# set the variables below, deploy, trigger a run (Cron Runs tab or
+# `railway cron run --service "PostGIS Backup"`), read the logs, then clear
+# the start command again so the nightly backup resumes.
+#
+#   RESTORE_FROM       backup folder name (e.g. 20261020T031500Z) or "latest" (default)
+#   RESTORE_DATABASE   database name inside the backup (default: PGDATABASE)
+#   RESTORE_TARGET     new database to create (default: <RESTORE_DATABASE>_restored);
+#                      letters, digits and _ only, must not exist yet
+#   RESTORE_OPTIONS    extra pg_restore options (default: --no-owner)
+set -Eeuo pipefail
+
+LOG_TAG=postgis-restore
+# shellcheck source=lib.sh
+. "${POSTGIS_BACKUP_LIB:-/usr/local/lib/postgis-backup/lib.sh}"
+
+main() {
+  configure_pg
+  configure_remote
+
+  local from="${RESTORE_FROM:-latest}" source_db="${RESTORE_DATABASE:-${PGDATABASE:-postgres}}"
+  local target="${RESTORE_TARGET:-}" key exists rc=0
+  if [ -z "$target" ]; then
+    target="$(object_name "$source_db")_restored"
+  fi
+  [[ "$target" =~ ^[A-Za-z_][A-Za-z0-9_]{0,62}$ ]] \
+    || die "RESTORE_TARGET '$target' must start with a letter or _ and contain only letters, digits and _ (max 63)"
+
+  if [ "$from" = latest ]; then
+    from=$(rclone cat "${REMOTE}/LATEST" 2>/dev/null | tr -d '[:space:]' || true)
+    [ -n "$from" ] || die "no ${REMOTE}/LATEST found: no complete backup yet"
+  fi
+  [[ "$from" =~ $TS_PATTERN ]] || die "RESTORE_FROM '$from' is not a backup folder name like 20261020T031500Z"
+
+  key="${REMOTE}/${from}/$(object_name "$source_db").dump"
+  [ -n "$(rclone lsf "$key" 2>/dev/null || true)" ] \
+    || die "backup object ${key} not found (list the folder in the Bucket's Files tab; see MANIFEST.txt)"
+
+  wait_for_postgres
+  exists=$(psql -X -q -A -t -v ON_ERROR_STOP=1 -v db="$target" <<'SQL'
+SELECT 1 FROM pg_database WHERE datname = :'db';
+SQL
+)
+  [ "$exists" != 1 ] || die "database '$target' already exists; choose another RESTORE_TARGET (nothing was changed)"
+
+  log "creating database '$target'"
+  psql -X -q -v ON_ERROR_STOP=1 -v db="$target" <<'SQL'
+CREATE DATABASE :"db" TEMPLATE template0;
+SQL
+
+  local -a options=()
+  read -r -a options <<< "${RESTORE_OPTIONS:---no-owner}"
+  log "restoring ${key} into '$target' (pg_restore ${options[*]})"
+  # Streamed: pg_restore reads the custom-format archive sequentially.
+  rclone cat "$key" | pg_restore --dbname="$target" --no-password "${options[@]}" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    die "pg_restore exited with $rc; '$target' is kept for inspection (drop it with DROP DATABASE \"$target\" when done)"
+  fi
+  log "restore complete: '$target' holds ${source_db} from backup ${from}. Point your app at it or rename databases, then clear the start command of this service."
+}
+
+main "$@"
